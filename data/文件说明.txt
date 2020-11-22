@@ -1,0 +1,175 @@
+utils/utilsLossMatch.py
+    函数encode:       被函数match用
+    函数point_form:   被函数match用
+    函数intersect:    被函数jaccard用
+    函数jaccard:      被函数match用
+    函数match:        被文件SSDLoss用
+utils/utilsNetDefaultBox.py
+    类DefaultBox:     被文件SSDNet.py用
+utils/utilsNetDetect.py
+    类Detect:         被文件SSDNet.py用
+    函数decode:       被类Detect用
+    函数nms:          被类Detect用
+
+
+====================SSDLoss.py====================
+==函数名：MultiBoxLoss.forward==
+参数：predictions: type=tuple
+                   predictions[0].shape = [batch_size, 8732, 4]     网络输出的8732个默认框的坐标
+                   predictions[1].shape = [batch_size, 8732, 21]    网络输出的8732个默认框的类别
+                   predictions[2].shape = [8732, 4]                 创建的8732个默认框的坐标
+      targets:     type=list    shape=[batch_size, n, 5]
+                   targets[i] = [minxi, minyi, maxxi, maxyi, classi]
+
+2. 第16、17行：
+    bestGtLocationBS.shape = [batch_size, 8732, 4]：默认框i与它的最好标注框的坐标的4个偏移量。
+    bestGtCategoryBS.shape = [batch_size, 8732]：默认框i的类别标签。
+3. 第19行：标记正样本pos.shape = [batch_size, 8732]：是目标(正样本)则为True(1);是背景(负样本)则为False(0)。
+4. 第21至24行：计算正样本的回归损失。
+    positiveIdx.shape = [batch_size, 8732, 4], positiveLoc.shape = [x, 4], bestGtLocationBS.shape = [x, 4]。x是正样本数。
+5. 分类损失：
+    第26行：计算所有样本的交叉熵损失
+        logicCategory.shape = [batch_size, 8732, 21]：置信度
+        bestGtCategoryBS.shape = [batch_size, 8732]：类别标签
+    第27行：loss_c.shape = [batch_size, 8732]
+    第28行：把正样本的损失置零
+    第30、31行：按loss从大到小排序
+        loss_idx.shape = [batch_size, 8732]：每张图上的8732个默认框的序号(loss_idx[b][i]=j：排名i的是默认框j)。
+        idx_rank.shape = [batch_size, 8732]：每张图上的8732个默认框的排名(idx_rank[b][i]=j：默认框i的排名是j)。
+    第19、33、34、35行：
+        正样本数量一般大于标注框数的原因：1.不同特征图上的默认框可能匹配到同一个标注框；2.一个标注框可能落在同一特征图的多个默认框。
+        正样本：与自己的最好标注框的重合度大于0.5的默认框
+        负样本：最好标注框的类别交叉熵损失较大的前n个默认框
+        因为预测出的外接框是从正样本中选出的，所以负样本就是代表背景的默认框。
+        正样本数：num_pos.shape = [batch_size, 1]
+        负样本数：num_neg.shape = [batch_size, 1]
+        正样本：pos.shape = [batch_size, 8732]：pos[b][i] = True:默认框i是正样本。
+        负样本：neg.shape = [batch_size, 8732]，neg[b][i] = True:默认框i是负样本。
+    第39、40行：筛选出正负样本
+        lgCategory.shape = [num_pos + num_neg, 21]
+        gtCategory.shape = [num_pos + num_neg]
+    第41行：计算正负样本的交叉熵损失。有些默认框既不是正样本也不是负样本，这样的默认框不参与交叉熵计算。
+
+
+====================SSDNet.py====================
+==函数名：Net.buildParts==
+1. vgg_layers包含6个卷积块共35层，每个卷积块的层数是5、5、7、7、7、4。
+    extra_layers包含4个卷积块共8层，每个卷积块的层数是2。
+2. vgg_source = [21, -2]
+    从forward函数来看，loc_layers[0]接收vgg_layers第23层L2Norm后的输出。
+    而vgg_layers的第23层是激活函数层，所以loc_layers[0]的输入通道数应该是vgg_layers第22层的输出通道数。
+    vgg_layers最后一层是激活函数层，所以loc_layers[1]的输入通道数应该是vgg_layers倒数第2层的输出通道数。
+3. for k, v in enumerate(extra_layers[1::2], 2):
+    k = 2,3,4,...
+    v从extra_layers[1]开始到表尾，间隔为2，即v=extra_layers[1], extra_layers[3], ...
+
+==函数名：Net.forward==
+1. VGG-16共5个卷积块，vgg_layers在VGG-16后加了一个卷积块共6个卷积块。
+    loc_layers[0]的输入是VGG-16/vgg_layers第4个卷积块后激活函数前的输出。
+    总结如下：
+    vgg_layers[4] -> L2Norm -> loc&conf_layers[1]
+    vgg_layers[6] -> loc&conf_layers[2]
+    extra_layers[1] -> loc&conf_layers[3]
+    extra_layers[2] -> loc&conf_layers[4]
+    extra_layers[3] -> loc&conf_layers[5]
+    extra_layers[4] -> loc&conf_layers[6]
+    注意：x进入loc卷积也进入conf卷积，变成两路。
+2.resize
+    loc[i]和conf[i]是loc卷积和conf卷积第i+1层有效特征的输出：
+    loc.shape = (6,)              loc[i].shape = [batch_size, 横向栅格数, 纵向栅格数, 4*mbox[i]]
+    conf.shape = (6,)             conf[i].shape = [batch_size, 横向栅格数, 纵向栅格数, 21*mbox[i]]
+    第一次resize：
+    loc.shape = [batch_size, 34928]       loc[i].shape = [34928]      8732 * 4
+    conf.shape = [batch_size, 183372]     conf[i].shape = [183372]    8732 * 21
+    第二次resize：
+    loc.shape = [batch_size, 8732, 4]
+    conf.shape = [batch_size, 8732, 21]
+
+
+====================utilsLossMatch.py====================
+==函数名：match==
+caffe版：https://github.com/weiliu89/caffe/blob/ssd/src/caffe/util/bbox_util.cpp
+讲解：https://www.cnblogs.com/xuanyuyt/p/7447111.html
+(下面的n是一副图像上目标的个数)
+参数: idx:              shape=[1]                      batch_size中的序号
+      gtLocation:       shape=[n, 4]                   n个标注框的坐标[minx, miny, maxx, maxy]
+      gtCategory:       shape=[n]                      n个标注框的类别
+      defaults:         shape=[8732, 4]                8732个默认框的坐标[cx, cy, w, h]
+      bestGtLocationBS: shape=[batch_size, 8732, 4]    返回值，见bestGtLocation_of_default
+      bestGtCategoryBS: shape=[batch_size, 8732]       返回值，见bestGtCategory_of_default
+      threshold:        shape=[1]                      0.5
+      variances:        shape=[2]                      [0.1, 0.2]
+
+--第2行：
+    overlaps = [[r1_1, r1_2, ..., r1_8732],
+                [r2_1, r2_2, ..., r2_8732],
+                              ...
+                [rn_1, rn_2, ..., rn_8732]]
+    ri_j的含义：第i个标注框与第j个默认框的重合程度（面积交并比）
+--第4行：
+    bestDefaultIdx_of_gt = [[r1_idx], [r2_idx], ..., [rn_idx]]，其中ri_idx = [ri_1, ri_2, ..., ri_8732].index(ri_max)
+    shape=[n, 1]，标注框的最好默认框（第i个标注框的最好默认框是ri_idx）
+--第7行：
+    bestOverlap_of_default = [[r1_max, r2_max, ..., r8732_max]]，其中rj_max = max([r1_j, r2_j, ..., rn_j])
+    shape=[1, 8732]，默认框的最好重合度（第j个默认框的最好重合度是rj_max）
+    bestGtIdx_of_default = [[r1_idx, r2_idx, ..., r8732_idx]]，其中rj_idx = [r1_j, r2_j, ..., rn_j].index(rj_max)
+    shape=[1, 8732]，默认框的最好标注框（第j个默认框的最好标注框是rj_idx）
+--第12行：
+    index_fill_：
+    把bestOverlap_of_default的0维度上，下标在bestDefaultIdx_of_gt内的元素都变成2，
+    如a = torch.tensor([0.13, 0.98, 0.09, 0.78]), b = torch.tensor([1,3])
+    则a.index_fill_(0, b, 2) = torch.tensor([0.13, 2, 0.09, 2])
+
+    bestOverlap_of_default.index_fill_(0, bestDefaultIdx_of_gt, 2)
+    如果一个默认框x是某个标注框的最好默认框：bestDefaultIdx_of_gt = [标注框1的最好默认框, 标注框2的最好默认框, ..., 标注框n的最好默认框]
+    就让bestOverlap_of_default[x]=2（就把该默认框的重合度设置为2）：bestOverlap_of_default = [默认框1的最好重合度, 默认框2的最好重合度, ..., 默认框8732的最好重合度]
+    这一步确保默认框x不被筛选掉。
+--第14、15行：
+    如果标注框g的最好默认框是默认框d：bestDefaultIdx_of_gt = [标注框1的最好默认框, 标注框2的最好默认框, ..., 标注框n的最好默认框]
+    注意：不同的标注框可能有共同的最好默认框
+    那么默认框d的最好标注框就是标注框g：bestGtIdx_of_default[bestDefaultIdx_of_gt[j]] = j
+    ！注意：这使每个默认框只能作为某一个标注框的最好默认框（而实际上1个默认框可能是多个标注框的最好默认框）
+--第17行：
+    bestGtLocation_of_default.shape = [8732, 4]：默认框的最好标注框的坐标。
+--第18行：
+    默认框i与它的最好标注框坐标的差异
+--第21行：
+    bestGtCategory_of_default.shape = [8732]：默认框的最好标注框的类别。
+    bestGtCategory_of_default[bestOverlap_of_default < threshold] = 0：
+    如果bestOverlap_of_default[i]<threshold那么bestGtCategory_of_default[i]=0
+    重合度小于阈值的默认框被认为是背景
+
+
+==函数名：encode==
+对默认框d与它的最好标注框g的4个坐标差，按论文公式(2)编码
+参数：matches:   shape=[8732,4]                 matches[i]=[minx, miny, maxx, maxy]：默认框i的最好标注框的坐标
+      defaults:  shape=[8732, 4]                8732个默认框的坐标[cx, cy, w, h]
+      variances: shape=[2]                      [0.1, 0.2]
+返回：y:         shape=[8732, 4]
+y[i]=[10*(cx_g-cx_d)/w_d, 10*(cy_g-cy_d)/h_d, 5*log(w_g/w_d), 5*log(h_g/h_d)]（g:默认框的最好标注框 d:该默认框）
+
+
+====================utilsNetDefaultBox.py====================
+==函数名：DefaultBox.forward==
+1. 在原图上划分栅格
+    x、y是是栅格的序号。把原图划分成4x4个栅格时：
+    x = [0 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3]
+    y = [0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3]
+2. 求栅格中心坐标
+    cx = (j + 0.5) / f_k
+    加0.5代表栅格的中心。cx乘300才代表原图上的栅格中心坐标。
+    f_k是个浮点数，因为不能整除的原因，右侧和下侧的栅格可能较小。
+3. 在每个栅格上划分4或6个默认框
+    默认框的中心和它们所在的栅格中心重合。
+    当把原图划分成38x38个8x8的栅格时，每个栅格上有：
+        1个30x30的默认框
+        1个30sqrt(2)x30sqrt(2)的默认框
+        1个30sqrt(2)x15sqrt(2)的默认框
+        1个15sqrt(2)x30sqrt(2)的默认框
+4. output的shape=[8732, 4]。
+    存放的是8732个默认框的坐标，坐标形式是[cx, cy, w, h]。
+    坐标值要乘300才是原图上的像素坐标。
+5. clamp_(max, min)函数：把小于min的值全换成min，把大于max的值全换成max。
+    这里不会出现小于0的情况，但会出现大于1的情况。
+    因为最右侧栅格的默认框的右边界、最下侧栅格的默认框的下边界可能在原图外部。
+    这里使用clamp_函数把它们的边界与原图边界对齐。
