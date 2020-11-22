@@ -1,0 +1,2 @@
+E:\projects\SSD\asset\0.jpg 50,60,200,210,1
+E:\projects\SSD\asset\1.jpg 30,100,150,220,2
